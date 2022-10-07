@@ -15,12 +15,15 @@ export MQTT_SERVER=1.2.3.4
 export MQTT_PORT=1883
 export MQTT_USER=my_user
 export MQTT_PASSWORD=abcdef
-python ./receiver.py shower_head_mac_address
+export HYDRAO_MAC_ADDRESS=00:00:00:00:00:00
+python ./main.py
 ```
 
 I'm running this script as a long running systemd service on a raspberry 2 located next to the bathroom.
 
 ## Credits
+
+Port from kamaradclimber to Home Assistant add-on.
 
 Code has been built my copy-pasting multiple existing scripts found to interact with bluetooth devices. If you recognize your code, drop me a note, I'll credit you.
 

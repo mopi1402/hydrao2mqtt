@@ -3,11 +3,16 @@ from argparse import ArgumentParser
 import os
 import json
 from datetime import datetime
+from logger import logger
+import logging
 
 from bluepy import btle
 import paho.mqtt.client as mqtt
 
 # Credits: https://itnext.io/ble-and-gatt-for-iot-2ae658baafd5
+
+
+logger = logging.getLogger(__name__)
 
 def print_peripheral(peripheral):
     print("Discovering Services...")
@@ -21,29 +26,92 @@ def print_peripheral(peripheral):
                 print(f"    Value: {characteristic.read()}")
 
 def main():
-    mqtt_client = build_mqtt_client()
+
+    # HASSIO ADDON
+    logger.info("~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+    logger.info("~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+    logger.info("~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+    logger.info("STARTING HYDRAO2MQTT")
+    logger.info("Detecting environnement......")
+
+    HYDRAO_MAC_ADDRESS = ""
+    MQTT_HOST = "localhost"
+    MQTT_PORT = 1883
+    MQTT_USER = ""
+    MQTT_PASSWORD = ""
+    MQTT_SSL = False
+
+    data_options_path = "/data/options.json"
+
+    try:
+        with open(data_options_path) as f:
+            logger.info(
+                f"{data_options_path} detected ! Hassio Addons Environnement : parsing `options.json`...."
+            )
+            try:
+                data = json.load(f)
+                logger.debug(data)
+
+                if data["HYDRAO_MAC_ADDRESS"] != "":
+                    HYDRAO_MAC_ADDRESS = data["HYDRAO_MAC_ADDRESS"]
+                else:
+                    logger.error("No Hydrao Mac address set")
+                    exit()
+
+                # CREDENTIALS MQTT
+                if data["MQTT_HOST"] != "localhost":
+                    MQTT_HOST = data["MQTT_HOST"]
+
+                if data["MQTT_USER"] != "":
+                    MQTT_USER = data["MQTT_USER"]
+
+                if data["MQTT_PASSWORD"] != "":
+                    MQTT_PASSWORD = data["MQTT_PASSWORD"]
+
+                if data["MQTT_PORT"] != 1883:
+                    MQTT_PORT = data["MQTT_PORT"]
+
+                if (data["MQTT_SSL"] == "true") or (data["MQTT_SSL"]):
+                    MQTT_SSL = True
+
+            except Exception as e:
+                logger.error("Parsing error %s", e)
+
+    except FileNotFoundError:
+        logger.info(
+            f"No '{data_options_path}', seems we are not in hassio addon mode.")
+        HYDRAO_MAC_ADDRESS = os.getenv("HYDRAO_MAC_ADDRESS")
+        
+        # CREDENTIALS MQTT
+        MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
+        MQTT_USER = os.getenv("MQTT_USER", "")
+        MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
+        # 1883 #1884 for websocket without SSL
+        MQTT_PORT = os.getenv("MQTT_PORT", 1883)
+
+    logger.info( f"Hydrao declared as {HYDRAO_MAC_ADDRESS}")
+
+    logger.info("~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+
+    mqtt_client = build_mqtt_client(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASSWORD)
     backoff = 1
     while True:
         try:
-            print("connect and read")
-            connect_and_read(mqtt_client)
+            connect_and_read(mqtt_client, HYDRAO_MAC_ADDRESS)
         except btle.BTLEDisconnectError as e:
-            print(f"Got disconnected, will retry in {backoff}s", flush=True)
+            logger.info(f" -> Got disconnected, will retry in {backoff}s. reason: {e}")
             time.sleep(backoff)
             backoff = min(backoff + 1, 30)
 
-def build_mqtt_client():
+def build_mqtt_client(host, port, user, password):
+    logger.info("Connecting to MQTT client...")
     client = mqtt.Client()
-    host = os.getenv('MQTT_HOST', 'localhost')
-    port = int(os.getenv('MQTT_PORT', '1883'))
-    user = os.getenv('MQTT_USER', None)
-    password = os.getenv('MQTT_PASSWORD', None)
-    client.enable_logger()  # TODO(g.seux): disable atfer a while
 
     if user is not None and password is not None:
         client.username_pw_set(user, password)
     client.connect(host, port, 60)
     client.loop_start()
+    logger.info(" -> Connected")
     return client
 
 def mqtt_declare_hydrao_sensors(mqtt_client, hydrao, delete_first=False):
@@ -81,10 +149,10 @@ def mqtt_update_hydrao_sensors(mqtt_client, current_volume, total_volume, hydrao
     prefix_topic = f"homeassistant/sensor/hydrao_{hydrao.addr.replace(':', '_')}"
     attributes_topic = f"{prefix_topic}/attributes"
     state_topic = f"{prefix_topic}/state"
-    print(f"Publish state to {state_topic} with {current_volume}")
+    logger.info(f"Publish state to {state_topic} with {current_volume}")
     mqtt_client.publish(state_topic, current_volume)
-    attributes = { "temperature": 42.42, "current_volume": current_volume, "last_400_showers": total_volume }
-    print(f"Publish attributes to {attributes_topic} with {attributes}")
+    attributes = { "current_volume": current_volume, "last_400_showers": total_volume }
+    logger.info(f"Publish attributes to {attributes_topic} with {attributes}")
     mqtt_client.publish(attributes_topic, json.dumps(attributes))
 
 
@@ -135,19 +203,20 @@ class FakeBTPeripheral:
         return self.service
 
 
-def connect_and_read(mqtt_client=None):
+def connect_and_read(mqtt_client, hydrao_mac_address):
     # get args
     args = get_args()
 
-    print("Connecting...", flush=True)
+    logger.info("Connecting to Bluetooth Hydrao device...")
+
     if args.dry_run:
         characteristics = {
           "0000ca1c-0000-1000-8000-00805f9b34fb": [FakeVolumeCharacteristic(100)]
         }
-        hydrao = FakeBTPeripheral(args.mac_address, characteristics)
+        hydrao = FakeBTPeripheral(hydrao_mac_address, characteristics)
     else:
-        hydrao = btle.Peripheral(args.mac_address)
-    print("Connected")
+        hydrao = btle.Peripheral(hydrao_mac_address)
+    logger.info(" -> Connected")
     # print_peripheral(hydrao)
     if mqtt_client is not None:
         mqtt_declare_hydrao_sensors(mqtt_client, hydrao)
@@ -193,7 +262,6 @@ def get_volumes(volumes_string):
 
 def get_args():
     arg_parser = ArgumentParser(description="Hydrao shower head")
-    arg_parser.add_argument('mac_address', help="MAC address of device to connect")
     arg_parser.add_argument('--dry_run', help="Activate dry-run mode", action="store_const", const=True)
     args = arg_parser.parse_args()
     return args
